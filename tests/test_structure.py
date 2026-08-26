@@ -7,7 +7,7 @@ from compiler.lexer.lexer import Lexer, LexerError
 from compiler.lexer.tokens import SourceLocation, Token, TokenType
 from compiler.profiler.workload import WorkloadMetrics, WorkloadProfiler
 from compiler.symbol_table.scope import Scope, ScopeError, ScopeType
-from compiler.symbol_table.symbol import Symbol, SymbolRole
+from compiler.symbol_table.symbol import Symbol, SymbolError, SymbolRole
 from compiler.symbol_table.symbol_table import SymbolTable
 
 
@@ -24,6 +24,7 @@ def test_package_imports() -> None:
     assert ScopeError is not None
     assert ScopeType is not None
     assert Symbol is not None
+    assert SymbolError is not None
     assert SymbolRole is not None
     assert SymbolTable is not None
     assert StringPool is not None
@@ -105,16 +106,6 @@ def test_pipeline_instantiation() -> None:
 
 def test_unimplemented_stubs_raise_not_implemented() -> None:
     """Verify stub methods in downstream modules raise NotImplementedError until implementation."""
-    symbol_table = SymbolTable()
-    loc = SourceLocation(line=1, column=1)
-    sym = Symbol(name="x", scope_id=0, scope_depth=0, location=loc)
-
-    with pytest.raises(NotImplementedError):
-        symbol_table.insert(sym)
-
-    with pytest.raises(NotImplementedError):
-        symbol_table.lookup("x")
-
     string_pool = StringPool()
     with pytest.raises(NotImplementedError):
         string_pool.intern("x")

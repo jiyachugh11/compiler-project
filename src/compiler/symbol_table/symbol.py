@@ -6,6 +6,12 @@ from typing import Optional
 from compiler.lexer.tokens import SourceLocation
 
 
+class SymbolError(Exception):
+    """Exception raised for invalid symbol table operations."""
+
+    pass
+
+
 class SymbolRole(Enum):
     """Role of a symbol occurrence in source code."""
 
