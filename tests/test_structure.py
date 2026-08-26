@@ -106,10 +106,6 @@ def test_pipeline_instantiation() -> None:
 
 def test_unimplemented_stubs_raise_not_implemented() -> None:
     """Verify stub methods in downstream modules raise NotImplementedError until implementation."""
-    profiler = WorkloadProfiler()
-    with pytest.raises(NotImplementedError):
-        profiler.compute_metrics(["x"])
-
     pipeline = CompilerPipeline()
     with pytest.raises(NotImplementedError):
         pipeline.run("int x = 1;")
