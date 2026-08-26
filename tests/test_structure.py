@@ -104,8 +104,9 @@ def test_pipeline_instantiation() -> None:
     assert isinstance(pipeline.profiler, WorkloadProfiler)
 
 
-def test_unimplemented_stubs_raise_not_implemented() -> None:
-    """Verify stub methods in downstream modules raise NotImplementedError until implementation."""
+def test_pipeline_execution() -> None:
+    """Verify CompilerPipeline runs and returns a valid AnalysisResult."""
     pipeline = CompilerPipeline()
-    with pytest.raises(NotImplementedError):
-        pipeline.run("int x = 1;")
+    result = pipeline.run("int x = 1;")
+    assert isinstance(result, AnalysisResult)
+    assert result.identifier_stream == ["x"]
