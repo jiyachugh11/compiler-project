@@ -1,21 +1,19 @@
-"""Integration test proving Backend 2 works with Backend 1's *real*
-AnalysisResult, not just the fake double used in the other unit tests.
+"""Backend 2 against Backend 1's REAL AnalysisResult.
 
-Skipped automatically if Backend 1's `compiler` package isn't importable
-(e.g. before the two branches are merged into the same src/ tree) --
-nothing here should block Backend 2's own test suite from passing
-independently.
+Skipped automatically when Backend 1's `compiler` package is not importable
+(e.g. before both branches share one src/ tree), so Backend 2's suite never
+depends on it.
 """
 
 import pytest
 
+from hashing.benchmark import BenchmarkRunner
 from hashing.models import HashAnalysisReport
 from hashing.pipeline import HashAnalysisPipeline
 
 compiler_pipeline = pytest.importorskip("compiler.pipeline")
 
-
-SAMPLE_C_SOURCE = """
+SOURCE = """
 int add(int a, int b) {
     int result = a + b;
     return result;
@@ -33,14 +31,42 @@ int main() {
 """
 
 
-def test_backend2_consumes_real_backend1_analysis_result():
-    analysis = compiler_pipeline.CompilerPipeline().run(SAMPLE_C_SOURCE)
+@pytest.fixture(scope="module")
+def analysis():
+    return compiler_pipeline.CompilerPipeline().run(SOURCE)
 
-    report = HashAnalysisPipeline().run(analysis)
 
+@pytest.fixture(scope="module")
+def report(analysis):
+    return HashAnalysisPipeline(benchmark_runner=BenchmarkRunner(repeats=1),
+                                security_options=dict(bits=7, targets=6, structural_samples=3)).run(analysis)
+
+
+def test_consumes_real_analysis_result(analysis, report):
     assert isinstance(report, HashAnalysisReport)
-    assert len(report.per_function) == 5
-    assert report.recommended_function
-    assert report.workload_summary["total_identifiers"] == (
-        analysis.workload_metrics.total_identifiers
-    )
+    assert len(report.per_function) == 11
+    assert report.workload_summary["total_identifiers"] == analysis.workload_metrics.total_identifiers
+
+
+def test_symbol_table_replay_matches_backend1_symbol_counts(analysis, report):
+    symbols = analysis.symbol_table.symbols
+    decls = sum(1 for s in symbols if s.role.name == "DECLARATION")
+    refs = len(symbols) - decls
+    for r in report.per_function:
+        st = r.symbol_table
+        assert st is not None
+        assert st.declarations + st.redeclarations == decls
+        assert st.resolutions == refs
+        assert st.scopes == len(analysis.scopes)
+
+
+def test_outcome_of_replay_does_not_depend_on_hash_function(report):
+    outcomes = {(r.symbol_table.declarations, r.symbol_table.resolutions, r.symbol_table.unresolved)
+                for r in report.per_function}
+    assert len(outcomes) == 1
+
+
+def test_probe_frequencies_come_from_real_workload(analysis, report):
+    freq = analysis.workload_metrics.identifier_frequency
+    assert sum(freq.values()) == analysis.workload_metrics.total_identifiers
+    assert all(r.weighted_avg_probes >= 1.0 for r in report.per_function)

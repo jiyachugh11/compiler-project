@@ -5,86 +5,82 @@ import pytest
 from hashing.hash_table import HashTable
 
 
-def constant_hash(_key: str) -> int:
-    """Forces every key into bucket 0 -- used to test collision counting."""
+def constant_hash(_key):
     return 0
 
 
-def identity_like_hash(key: str) -> int:
+def sum_hash(key):
     return sum(ord(c) for c in key)
 
 
-def test_insert_and_lookup():
-    table = HashTable(bucket_count=8, hash_fn=identity_like_hash)
-    table.insert("foo", 1)
-    table.insert("bar", 2)
-    assert table.lookup("foo") == 1
-    assert table.lookup("bar") == 2
-    assert table.lookup("missing") is None
+def test_insert_lookup_contains():
+    t = HashTable(8, sum_hash)
+    t.insert("foo", 1)
+    t.insert("bar", 2)
+    assert t.lookup("foo") == 1 and t.lookup("bar") == 2 and t.lookup("zzz") is None
+    assert t.contains("foo") and not t.contains("baz")
 
 
-def test_contains():
-    table = HashTable(bucket_count=8, hash_fn=identity_like_hash)
-    table.insert("foo", 1)
-    assert table.contains("foo") is True
-    assert table.contains("baz") is False
+def test_update_does_not_grow_or_count_collisions():
+    t = HashTable(8, sum_hash)
+    t.insert("foo", 1)
+    t.insert("foo", 2)
+    assert t.size == 1 and t.collisions == 0 and t.lookup("foo") == 2
 
 
-def test_update_existing_key_does_not_increase_size_or_count_collision():
-    table = HashTable(bucket_count=8, hash_fn=identity_like_hash)
-    table.insert("foo", 1)
-    table.insert("foo", 2)  # update, not a new key
-    assert table.size == 1
-    assert table.collisions == 0
-    assert table.lookup("foo") == 2
+def test_bucket_collisions_with_forced_collisions():
+    t = HashTable(4, constant_hash)
+    for k in "abc":
+        t.insert(k)
+    assert t.collisions == 2
+    assert t.max_chain_length() == 3
+    assert t.colliding_pairs() == 3          # C(3,2)
 
 
-def test_collision_counting_with_forced_collisions():
-    table = HashTable(bucket_count=4, hash_fn=constant_hash)
-    table.insert("a")
-    table.insert("b")
-    table.insert("c")
-    # first insert: empty bucket, no collision. next two: bucket occupied.
-    assert table.collisions == 2
-    assert table.size == 3
-    assert table.max_chain_length() == 3
+def test_full_hash_collision_vs_bucket_collision():
+    """'ab' and 'ba' share the full digest; 'c' only shares the bucket."""
+    h = {"ab": 10, "ba": 10, "c": 14}.__getitem__   # 14 mod 4 == 10 mod 4
+    t = HashTable(4, h)
+    for k in ("ab", "ba", "c"):
+        t.insert(k)
+    assert t.full_hash_collisions == 1       # ab/ba
+    assert t.collisions == 2                 # ba and c both found an occupied bucket
 
 
-def test_load_factor():
-    table = HashTable(bucket_count=10, hash_fn=identity_like_hash)
+def test_every_full_collision_is_a_bucket_collision():
+    t = HashTable(16, lambda k: len(k))
+    for k in ["aa", "bb", "cc", "ddd", "eee"]:
+        t.insert(k)
+    assert t.collisions >= t.full_hash_collisions
+
+
+def test_probes_counts_chain_position():
+    t = HashTable(4, constant_hash)
+    for k in "abc":
+        t.insert(k)
+    assert [t.probes(k) for k in "abc"] == [1, 2, 3]
+    assert t.probes("missing") is None
+    assert t.chain_length_for("anything") == 3
+
+
+def test_load_factor_and_distribution():
+    t = HashTable(10, sum_hash)
     for i in range(5):
-        table.insert(f"id{i}", i)
-    assert table.load_factor() == pytest.approx(0.5)
+        t.insert(f"id{i}", i)
+    assert t.load_factor() == pytest.approx(0.5)
+    dist = t.bucket_distribution()
+    assert len(dist) == 10 and sum(dist) == 5
+    assert t.non_empty_buckets() == sum(1 for c in dist if c)
 
 
-def test_bucket_distribution_length_matches_bucket_count():
-    table = HashTable(bucket_count=16, hash_fn=identity_like_hash)
-    for i in range(10):
-        table.insert(f"id{i}", i)
-    dist = table.bucket_distribution()
-    assert len(dist) == 16
-    assert sum(dist) == 10
-
-
-def test_non_empty_buckets():
-    table = HashTable(bucket_count=4, hash_fn=constant_hash)
-    table.insert("a")
-    table.insert("b")
-    assert table.non_empty_buckets() == 1  # everything hashed to bucket 0
-
-
-def test_invalid_bucket_count_raises():
+def test_invalid_bucket_count():
     with pytest.raises(ValueError):
-        HashTable(bucket_count=0, hash_fn=identity_like_hash)
+        HashTable(0, sum_hash)
 
 
-def test_estimated_memory_bytes_is_positive_and_grows_with_size():
-    small = HashTable(bucket_count=8, hash_fn=identity_like_hash)
+def test_memory_estimate_grows():
+    small, large = HashTable(8, sum_hash), HashTable(8, sum_hash)
     small.insert("a", 1)
-
-    large = HashTable(bucket_count=8, hash_fn=identity_like_hash)
     for i in range(50):
         large.insert(f"identifier_{i}", i)
-
-    assert small.estimated_memory_bytes() > 0
-    assert large.estimated_memory_bytes() > small.estimated_memory_bytes()
+    assert 0 < small.estimated_memory_bytes() < large.estimated_memory_bytes()

@@ -7,14 +7,13 @@ import pytest
 
 from hashing.models import HashFunctionResult
 from hashing.recommender import AdaptiveRecommender, _normalize
+from hashing.security import SecurityResult
+from hashing.symbol_table_hashed import SymbolTableBenchResult
 
 
 @dataclass
-class FakeWorkloadMetrics:
-    """Minimal stand-in satisfying WorkloadMetricsLike for unit tests --
-    deliberately NOT importing Backend 1's real WorkloadMetrics, to prove
-    the recommender only depends on the structural interface."""
-
+class FakeWM:
+    """Stand-in satisfying WorkloadMetricsLike (no import of Backend 1)."""
     total_identifiers: int = 100
     unique_identifiers: int = 50
     average_identifier_length: float = 6.0
@@ -28,72 +27,98 @@ class FakeWorkloadMetrics:
     identifiers_per_scope: Dict[int, int] = field(default_factory=dict)
 
 
-def make_result(name, insert_t, lookup_t, collisions, memory=1000):
+def mk(name, ins=0.01, look=0.01, pairs=5, full=0, probes=1.2, aval=0.95, mem=1000, family="Classic string hash"):
     return HashFunctionResult(
-        name=name,
-        bucket_count=100,
-        items_inserted=50,
-        insert_time_sec=insert_t,
-        lookup_time_sec=lookup_t,
-        lookups_performed=100,
-        collisions=collisions,
-        max_chain_length=2,
-        non_empty_buckets=40,
-        load_factor=0.5,
-        estimated_memory_bytes=memory,
-        bucket_distribution=[1] * 100,
-    )
+        name=name, bucket_count=100, items_inserted=50, insert_time_sec=ins,
+        lookup_time_sec=look, lookups_performed=100, collisions=pairs, max_chain_length=2,
+        non_empty_buckets=40, load_factor=0.5, estimated_memory_bytes=mem,
+        family=family, colliding_pairs=pairs, full_hash_collisions=full,
+        weighted_avg_probes=probes, avalanche_quality=aval)
 
 
-def test_normalize_flat_input_returns_zeros():
+def test_normalize_basic_flat_and_tolerance():
     assert _normalize([5, 5, 5]) == [0.0, 0.0, 0.0]
-
-
-def test_normalize_basic_range():
     assert _normalize([0, 5, 10]) == [0.0, 0.5, 1.0]
+    # 100 vs 110 are within a 25% band of the best -> tied; 200 still penalised
+    assert _normalize([100, 110, 200], rel_tol=0.25) == [0.0, 0.0, 1.0]
+    assert _normalize([3, 4], abs_tol=1) == [0.0, 0.0]
 
 
-def test_recommend_picks_clear_winner():
-    results = [
-        make_result("Good", insert_t=0.001, lookup_t=0.001, collisions=0),
-        make_result("Bad", insert_t=0.1, lookup_t=0.1, collisions=50),
-    ]
-    recommender = AdaptiveRecommender()
-    name, reason = recommender.recommend(results, FakeWorkloadMetrics())
-    assert name == "Good"
-    assert "Good" in reason
-    assert "Bad" in reason  # mentioned as one of the other candidates
+def test_clear_winner():
+    good = mk("Good", ins=0.001, look=0.001, pairs=0, probes=1.0, aval=0.99)
+    bad = mk("Bad", ins=0.1, look=0.1, pairs=50, probes=2.5, aval=0.4)
+    name, reason = AdaptiveRecommender().recommend([bad, good], FakeWM())
+    assert name == "Good" and "runner-up: Bad" in reason
 
 
-def test_recommend_raises_on_empty_results():
-    recommender = AdaptiveRecommender()
+def test_empty_results_raise():
     with pytest.raises(ValueError):
-        recommender.recommend([], FakeWorkloadMetrics())
+        AdaptiveRecommender().recommend([], FakeWM())
 
 
-def test_high_repetition_weights_lookup_heavily():
-    # Function A: fast lookup, slower insert, few collisions.
-    # Function B: fast insert, slow lookup.
-    results = [
-        make_result("A", insert_t=0.05, lookup_t=0.001, collisions=1),
-        make_result("B", insert_t=0.001, lookup_t=0.05, collisions=1),
-    ]
-    wm = FakeWorkloadMetrics(repetition_ratio=0.9, uniqueness_ratio=0.1)
-    recommender = AdaptiveRecommender()
-    name, reason = recommender.recommend(results, wm)
-    assert name == "A"
-    assert "repetition ratio" in reason
+def test_baseline_is_ranked_but_never_recommended():
+    base = mk("Base", ins=0.0001, look=0.0001, pairs=0, probes=1.0, aval=0.99, family="Baseline (poor)")
+    real = mk("Real", ins=0.01, look=0.01, pairs=5)
+    name, reason, ranking, _ = AdaptiveRecommender().recommend_detailed([real, base], FakeWM())
+    assert name == "Real"
+    assert ranking[0].name == "Base" and ranking[0].eligible is False
+    assert "never recommended" in reason
 
 
-def test_high_uniqueness_large_workload_weights_collisions_heavily():
-    results = [
-        make_result("LowCollision", insert_t=0.01, lookup_t=0.01, collisions=0),
-        make_result("HighCollision", insert_t=0.005, lookup_t=0.005, collisions=80),
-    ]
-    wm = FakeWorkloadMetrics(
-        uniqueness_ratio=0.95, total_identifiers=500, repetition_ratio=0.05
-    )
-    recommender = AdaptiveRecommender()
-    name, reason = recommender.recommend(results, wm)
-    assert name == "LowCollision"
-    assert "uniqueness ratio" in reason
+def test_full_hash_collisions_are_penalised():
+    clean = mk("Clean", full=0)
+    dirty = mk("Dirty", full=40)
+    assert AdaptiveRecommender().recommend([dirty, clean], FakeWM())[0] == "Clean"
+
+
+def test_high_repetition_weights_lookup():
+    a = mk("A", ins=0.05, look=0.001, probes=1.0)
+    b = mk("B", ins=0.001, look=0.05, probes=2.0)
+    name, reason = AdaptiveRecommender().recommend([a, b], FakeWM(repetition_ratio=0.9, uniqueness_ratio=0.1))
+    assert name == "A" and "Repetition ratio is high" in reason
+
+
+def test_high_uniqueness_weights_collisions():
+    low = mk("LowCollision", ins=0.01, look=0.01, pairs=0, full=0)
+    high = mk("HighCollision", ins=0.005, look=0.005, pairs=80, full=10)
+    wm = FakeWM(uniqueness_ratio=0.95, total_identifiers=500, repetition_ratio=0.05)
+    name, reason = AdaptiveRecommender().recommend([high, low], wm)
+    assert name == "LowCollision" and "collision avoidance" in reason
+
+
+def test_weights_always_sum_to_one_and_ranking_is_sorted():
+    rec = AdaptiveRecommender()
+    for wm in (FakeWM(repetition_ratio=0.9), FakeWM(uniqueness_ratio=0.9, total_identifiers=300), FakeWM()):
+        assert sum(rec._weights_for(wm).values()) == pytest.approx(1.0)
+    _, _, ranking, weights = rec.recommend_detailed([mk("A"), mk("B", pairs=30)], FakeWM())
+    assert [r.rank for r in ranking] == [1, 2]
+    assert ranking[0].score <= ranking[1].score and sum(weights.values()) == pytest.approx(1.0)
+
+
+def test_symtab_replay_time_joins_scoring_when_present():
+    def st(t):
+        return SymbolTableBenchResult(2, 5, 0, 8, 0, 1.2, 1.3, 1, 2, t)
+    a, b = mk("A"), mk("B")
+    a.symbol_table, b.symbol_table = st(0.001), st(0.05)
+    name, reason, _, weights = AdaptiveRecommender().recommend_detailed([b, a], FakeWM())
+    assert name == "A" and "symtab_time" in weights and "symbol-table traffic" in reason
+    assert sum(weights.values()) == pytest.approx(1.0)
+
+
+def test_security_note_added_for_structurally_weak_winner():
+    sec = SecurityResult(10, 5, 1.0, 1.0, 1.0, 1.0, 5, 5, 1.0, ("a", "b"), "weak")
+    best = mk("Weak"); best.security = sec
+    _, reason = AdaptiveRecommender().recommend([best, mk("Other", pairs=90, aval=0.3)], FakeWM())
+    assert "cheap second preimages" in reason
+
+
+def test_confidence_levels():
+    c = AdaptiveRecommender.confidence_for
+    assert c(FakeWM(unique_identifiers=10)) == "low"
+    assert c(FakeWM(unique_identifiers=100)) == "medium"
+    assert c(FakeWM(unique_identifiers=500)) == "high"
+
+
+def test_low_confidence_is_stated_in_reason():
+    _, reason = AdaptiveRecommender().recommend([mk("A")], FakeWM(unique_identifiers=8))
+    assert "Confidence is LOW" in reason

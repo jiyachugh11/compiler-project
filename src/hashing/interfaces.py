@@ -1,19 +1,17 @@
 """Structural interface contract between Backend 1 and Backend 2.
 
-Backend 2 never imports Backend 1's concrete classes (AnalysisResult,
-WorkloadMetrics, SymbolTable, Scope, ...). Instead it depends only on these
-Protocols, which describe the minimum shape it needs. Any object with these
-attributes -- Backend 1's real AnalysisResult, a test double, a future
-refactor of Backend 1 -- satisfies the contract automatically (structural
-typing), so Backend 2 keeps working even if Backend 1's internals change.
+Backend 2 never imports Backend 1's concrete classes. It depends only on these
+Protocols, which describe the minimum shape it needs, so any object with these
+attributes (Backend 1's real AnalysisResult, a test double, a future refactor)
+satisfies the contract automatically.
 
-Fields Backend 2 actually uses:
-    - identifier_stream
-    - interned_identifiers
-    - workload_metrics (and its sub-fields below)
+REQUIRED (core benchmark):
+    identifier_stream, interned_identifiers, workload_metrics (+ fields below)
 
-Everything else Backend 1 produces (symbol_table, scopes, source_code) is
-intentionally NOT part of this contract because Backend 2 has no use for it.
+OPTIONAL (hash-table-backed symbol-table replay; skipped when absent). Read
+only through hashing/adapters.py:
+    symbol_table.symbols  ordered items with .name, .scope_id, .role.name
+    scopes                {scope_id: obj with .parent_id}
 """
 
 from typing import Dict, List, Protocol, runtime_checkable
